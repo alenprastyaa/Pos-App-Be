@@ -171,13 +171,10 @@ const createTransaksi = async (req, res) => {
                 await t.rollback();
                 return error(res, `Stok produk (${produk.nama_produk}) tidak mencukupi`, 400);
             }
-
             const harga = produk.harga_jual_ritel;
             const subtotal = harga * item.qty;
             totalHarga += subtotal;
             totalQty += item.qty;
-
-            // Buat detail transaksi
             await TransaksiDetail.create({
                 transaksi_id: transaksi.id,
                 produk_id: produk.id,
@@ -191,22 +188,40 @@ const createTransaksi = async (req, res) => {
                 stok_produk: produk.stok_produk - item.qty
             }, { transaction: t });
         }
+
+        // PERBAIKAN LOGIKA HUTANG DAN KEMBALIAN
         const hutangLama = pelanggan.hutang || 0;
-        const totalBayar = pembayaran + hutangLama;
-        let sisaHutang = totalHarga - totalBayar;
+
+        // Pembayaran pertama digunakan untuk melunasi hutang lama
+        let sisaBayar = pembayaran;
+        let sisaHutangLama = hutangLama;
+
+        // Lunasi hutang lama terlebih dahulu
+        if (sisaBayar > 0 && sisaHutangLama > 0) {
+            const bayarHutangLama = Math.min(sisaBayar, sisaHutangLama);
+            sisaBayar -= bayarHutangLama;
+            sisaHutangLama -= bayarHutangLama;
+        }
+
+        // Sisa pembayaran untuk transaksi saat ini
+        let sisaHutangBaru = totalHarga - sisaBayar;
         let kembalian = 0;
 
-        if (sisaHutang < 0) {
-            kembalian = Math.abs(sisaHutang);
-            sisaHutang = 0;
+        if (sisaHutangBaru < 0) {
+            kembalian = Math.abs(sisaHutangBaru);
+            sisaHutangBaru = 0;
         }
-        await pelanggan.update({ hutang: sisaHutang }, { transaction: t });
+
+        // Total hutang pelanggan = sisa hutang lama + sisa hutang baru
+        const totalHutangAkhir = sisaHutangLama + sisaHutangBaru;
+
+        await pelanggan.update({ hutang: totalHutangAkhir }, { transaction: t });
         await transaksi.update({
             total_item: items.length,
             total_qty: totalQty,
             total_harga: totalHarga,
             total_bayar: pembayaran,
-            sisa_hutang: sisaHutang,
+            sisa_hutang: sisaHutangBaru,
             total_kembalian: kembalian
         }, { transaction: t });
 
@@ -217,7 +232,17 @@ const createTransaksi = async (req, res) => {
             pelanggan: {
                 id: pelanggan.id,
                 nama_pelanggan: pelanggan.nama_pelanggan,
-                hutang_sekarang: sisaHutang
+                hutang_sebelumnya: hutangLama,
+                pembayaran_untuk_hutang_lama: Math.min(pembayaran, hutangLama),
+                sisa_hutang_lama: sisaHutangLama,
+                hutang_transaksi_saat_ini: sisaHutangBaru,
+                total_hutang_sekarang: totalHutangAkhir,
+                kembalian: kembalian,
+                detail_perhitungan: {
+                    total_harga: totalHarga,
+                    pembayaran: pembayaran,
+                    sisaBayarSetelahLunasHutangLama: sisaBayar
+                }
             }
         });
 
