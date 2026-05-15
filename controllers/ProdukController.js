@@ -4,7 +4,6 @@ const Toko = require("../models/Toko")
 const { success, error } = require("../utils/response");
 const { Op } = require('sequelize')
 const ExcelJS = require("exceljs");
-const axios = require('axios')
 
 const createProduk = async (req, res) => {
     try {
@@ -218,29 +217,18 @@ const downloadProdukExcel = async (req, res) => {
         });
 
         const excelBuffer = await workbook.xlsx.writeBuffer();
-        const fileBuffer = Buffer.from(excelBuffer);
+        const fileName = `produk_${Date.now()}.xlsx`;
 
-        const blob = new Blob([fileBuffer], {
-            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        });
-
-        const form = new FormData();
-        form.append("file", blob, `produk_${Date.now()}.xlsx`);
-
-        const uploadResponse = await axios.post(
-            "https://invitations.my.id/api/upload-file",
-            form,
-            {
-                headers: {
-                    ...form.getHeaders?.(),
-                    "Content-Type": "multipart/form-data",
-                },
-                maxBodyLength: Infinity,
-                maxContentLength: Infinity,
-            }
+        res.setHeader(
+            "Content-Type",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        res.setHeader(
+            "Content-Disposition",
+            `attachment; filename="${fileName}"`
         );
 
-        return success(res, "Berhasil generate file", uploadResponse.data.data);
+        return res.status(200).send(Buffer.from(excelBuffer));
 
     } catch (err) {
         console.error(err);
