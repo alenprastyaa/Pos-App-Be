@@ -12,12 +12,7 @@ const getMyData = async (req, res) => {
         const user = await User.findOne({
             where: { id: userId },
             attributes: { exclude: ["password"] },
-            include: [
-                {
-                    model: Toko,
-                    as: "toko",
-                }
-            ]
+            include: [Toko]
         });
 
         if (!user) {

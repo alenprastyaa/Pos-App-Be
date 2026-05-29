@@ -13,18 +13,22 @@ const produkRoutes = require("./routes/ProdukRoutes")
 const transaksiRoutes = require("./routes/transaksiRoutes")
 const pelanggan = require("./routes/pelanggan")
 const dashboard = require("./routes/dashboard")
+const orderRoutes = require("./routes/orderRoutes")
+const realtimeRoutes = require("./routes/realtimeRoutes")
 
 
-const StartApp = () => {
+const StartApp = async () => {
     try {
-        db.authenticate();
-        // db.sync({ alter: true, logging: console.log });
+        await db.authenticate();
+        await db.sync();
         app.use("/user", AuthRoutes)
         app.use("/toko", tokoRoute);
         app.use("/produk", produkRoutes)
         app.use("/transaksi", transaksiRoutes)
         app.use("/pelanggan", pelanggan)
         app.use("/dashboard", dashboard)
+        app.use("/order", orderRoutes)
+        app.use("/realtime", realtimeRoutes)
         app.listen(port, () => {
             console.log("Aplikasi Berjalan di port : ", port);
         });

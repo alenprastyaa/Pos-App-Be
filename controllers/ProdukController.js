@@ -236,6 +236,33 @@ const downloadProdukExcel = async (req, res) => {
     }
 };
 
+const getProdukByToko = async (req, res) => {
+    try {
+        const { tokoId } = req.params;
+
+        if (!tokoId) {
+            return error(res, "tokoId wajib diisi", 400);
+        }
+
+        const produk = await Produk.findAll({
+            where: { toko_id: tokoId },
+            include: [
+                {
+                    model: User,
+                    attributes: ["id", "full_name", "email", "role_name", "toko_id"],
+                    include: [{ model: Toko }],
+                },
+            ],
+            order: [["createdAt", "DESC"]],
+        });
+
+        return success(res, "Data produk toko ditemukan", produk);
+    } catch (err) {
+        console.error(err);
+        return error(res, "Server error", 500, err.message);
+    }
+};
+
 
 const uploadExcelCreateProduk = async (req, res) => {
     try {
@@ -297,6 +324,7 @@ module.exports = {
     createProduk,
     getAllProduk,
     getProdukById,
+    getProdukByToko,
     updateProduk,
     deleteProduk,
     downloadProdukExcel,
