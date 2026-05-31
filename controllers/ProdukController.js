@@ -3,7 +3,7 @@ const User = require("../models/User");
 const Toko = require("../models/Toko")
 const { success, error } = require("../utils/response");
 const { Op } = require('sequelize')
-const ExcelJS = require("exceljs");
+const { buildProdukWorkbookBuffer } = require("../utils/productExcelReport");
 
 const createProduk = async (req, res) => {
     try {
@@ -184,40 +184,49 @@ const deleteProduk = async (req, res) => {
 };
 const downloadProdukExcel = async (req, res) => {
     try {
-        const where = {};
+        if (req.user.role_name !== "superadmin") {
+            return error(res, "Hanya super admin yang dapat mengunduh file Excel produk", 403);
+        }
 
-        if (req.user.role_name === "admin") {
+        let where = {};
+        let filenamePrefix = "produk";
+        const isSuperAdmin = req.user.role_name === "superadmin";
+
+        if (!isSuperAdmin) {
             where.toko_id = req.user.toko_id;
         }
 
-        const produkList = await Produk.findAll({ where });
+        const [produkList, tokoList] = await Promise.all([
+            Produk.findAll({
+                where,
+                include: [{
+                    model: Toko,
+                    attributes: ["id", "nama_toko"]
+                }],
+                order: [
+                    ["nama_produk", "ASC"]
+                ]
+            }),
+            isSuperAdmin
+                ? Toko.findAll({
+                    attributes: ["id", "nama_toko"],
+                    order: [["nama_toko", "ASC"]]
+                })
+                : []
+        ]);
 
-        const workbook = new ExcelJS.Workbook();
-        const worksheet = workbook.addWorksheet("Produk");
+        if (isSuperAdmin) {
+            filenamePrefix = "produk_semua_toko";
+        }
 
-        // Header sesuai upload
-        worksheet.columns = [
-            { header: "nama_produk", key: "nama_produk", width: 25 },
-            { header: "barcode", key: "barcode", width: 20 },
-            { header: "stok_produk", key: "stok_produk", width: 15 },
-            { header: "harga_beli", key: "harga_beli", width: 15 },
-            { header: "harga_jual_ritel", key: "harga_jual_ritel", width: 20 },
-            { header: "harga_jual_biasa", key: "harga_jual_biasa", width: 20 },
-        ];
-
-        produkList.forEach((p) => {
-            worksheet.addRow({
-                nama_produk: p.nama_produk,
-                barcode: p.barcode,
-                stok_produk: p.stok_produk,
-                harga_beli: p.harga_beli,
-                harga_jual_ritel: p.harga_jual_ritel,
-                harga_jual_biasa: p.harga_jual_biasa,
-            });
+        const excelBuffer = await buildProdukWorkbookBuffer({
+            products: produkList,
+            stores: tokoList,
+            includeAllStores: isSuperAdmin
         });
 
-        const excelBuffer = await workbook.xlsx.writeBuffer();
-        const fileName = `produk_${Date.now()}.xlsx`;
+        const suffix = new Date().toISOString().slice(0, 10);
+        const fileName = `${filenamePrefix}_${suffix}.xlsx`;
 
         res.setHeader(
             "Content-Type",

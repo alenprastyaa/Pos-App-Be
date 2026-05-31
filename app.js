@@ -7,6 +7,7 @@ const db = require("./config/db")
 const port = 3900
 app.use(express.json());
 app.use(cors())
+require("./models/EmailReportSetting");
 const AuthRoutes = require('./routes/authRoutes')
 const tokoRoute = require("./routes/tokoRoute");
 const produkRoutes = require("./routes/ProdukRoutes")
@@ -15,12 +16,14 @@ const pelanggan = require("./routes/pelanggan")
 const dashboard = require("./routes/dashboard")
 const orderRoutes = require("./routes/orderRoutes")
 const realtimeRoutes = require("./routes/realtimeRoutes")
+const { initializeEmailReportScheduler } = require("./services/emailReportScheduler");
 
 
 const StartApp = async () => {
     try {
         await db.authenticate();
         await db.sync();
+        await initializeEmailReportScheduler();
         app.use("/user", AuthRoutes)
         app.use("/toko", tokoRoute);
         app.use("/produk", produkRoutes)
