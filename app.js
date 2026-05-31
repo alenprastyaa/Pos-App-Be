@@ -15,7 +15,7 @@ const pelanggan = require("./routes/pelanggan")
 const dashboard = require("./routes/dashboard")
 const orderRoutes = require("./routes/orderRoutes")
 const realtimeRoutes = require("./routes/realtimeRoutes")
-// tes
+
 
 const StartApp = async () => {
     try {
