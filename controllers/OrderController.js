@@ -37,6 +37,10 @@ const getPendingIncomingCountForSuperadmin = async () => {
     });
 };
 
+const getRetailPrice = (produk) => {
+    return Number(produk.harga_jual_ritel ?? produk.harga_jual_biasa ?? 0);
+};
+
 const buildDateRange = (dateString) => {
     if (!dateString) {
         return null;
@@ -153,7 +157,7 @@ const createOrder = async (req, res) => {
                 return error(res, "Produk tidak ditemukan di toko tujuan", 404);
             }
 
-            const harga = item.harga ? Number(item.harga) : Number(produk.harga_jual_biasa ?? produk.harga_jual_ritel ?? 0);
+            const harga = getRetailPrice(produk);
             const subtotal = harga * qty;
 
             totalItem += 1;
@@ -406,7 +410,6 @@ const approveOrder = async (req, res) => {
                 return error(res, "Qty item tidak valid", 400);
             }
 
-            const harga = Number(item.harga ?? 0);
             let produk = null;
 
             if (item.produk_id) {
@@ -432,7 +435,7 @@ const approveOrder = async (req, res) => {
                 return error(res, `Produk ${item.nama_produk || item.barcode || ""} tidak ditemukan di toko tujuan`, 404);
             }
 
-            const finalHarga = harga > 0 ? harga : Number(produk.harga_jual_biasa ?? produk.harga_jual_ritel ?? 0);
+            const finalHarga = getRetailPrice(produk);
             const subtotal = finalHarga * qty;
 
             finalDetails.push({
