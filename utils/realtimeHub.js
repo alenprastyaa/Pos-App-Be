@@ -14,16 +14,28 @@ const removeClient = (res) => {
 };
 
 const writeEvent = (res, payload, eventName = null) => {
-    if (eventName) {
-        res.write(`event: ${eventName}\n`);
+    if (res.destroyed || res.writableEnded) {
+        return false;
     }
-    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+
+    try {
+        if (eventName) {
+            res.write(`event: ${eventName}\n`);
+        }
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        return true;
+    } catch (error) {
+        return false;
+    }
 };
 
 const broadcast = (predicate, payload, eventName = null) => {
     for (const client of clients) {
         if (predicate(client)) {
-            writeEvent(client.res, payload, eventName);
+            const sent = writeEvent(client.res, payload, eventName);
+            if (!sent) {
+                clients.delete(client);
+            }
         }
     }
 };

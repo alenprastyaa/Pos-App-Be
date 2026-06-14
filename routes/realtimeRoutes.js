@@ -97,7 +97,13 @@ router.get("/stream", async (req, res) => {
             "Cache-Control": "no-cache, no-transform",
             Connection: "keep-alive",
             "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": req.headers.origin || "*",
+            "Access-Control-Allow-Credentials": "true",
         });
+
+        if (typeof res.flushHeaders === "function") {
+            res.flushHeaders();
+        }
 
         res.write(`retry: 5000\n\n`);
 
@@ -114,13 +120,20 @@ router.get("/stream", async (req, res) => {
         res.write(`data: ${JSON.stringify({ type: "snapshot", ...snapshot })}\n\n`);
 
         const heartbeat = setInterval(() => {
+            if (res.destroyed || res.writableEnded) {
+                clearInterval(heartbeat);
+                removeClient(res);
+                return;
+            }
             res.write(": ping\n\n");
         }, 25000);
 
         req.on("close", () => {
             clearInterval(heartbeat);
             removeClient(res);
-            res.end();
+            if (!res.writableEnded) {
+                res.end();
+            }
         });
     } catch (error) {
         console.error("SSE stream error:", error);

@@ -5,6 +5,9 @@ const Order = require("../models/Order");
 const OrderDetail = require("../models/OrderDetail");
 const Produk = require("../models/Product");
 const Toko = require("../models/Toko");
+const Pelanggan = require("../models/Pelanggan");
+const TransaksiPenjualan = require("../models/TransaksiPenjualan");
+const TransaksiDetail = require("../models/TransaksiDetail");
 const {
     broadcastToToko,
     broadcastToRole,
@@ -63,12 +66,14 @@ const buildNotification = (order, type, actorName = "") => {
         create: "Order Masuk Baru",
         approved: "Order Disetujui",
         rejected: "Order Ditolak",
+        revised: "Order Direvisi",
     };
 
     const messageMap = {
         create: `${sourceName} mengirim order ${order.order_code} ke ${targetName}`,
         approved: `Order ${order.order_code} telah disetujui${actorName ? ` oleh ${actorName}` : ""}.`,
         rejected: `Order ${order.order_code} telah ditolak${actorName ? ` oleh ${actorName}` : ""}.`,
+        revised: `Order ${order.order_code} telah direvisi${actorName ? ` oleh ${actorName}` : ""}.`,
     };
 
     return {
@@ -82,6 +87,209 @@ const buildNotification = (order, type, actorName = "") => {
         status: order.status,
         createdAt: new Date().toISOString(),
     };
+};
+
+const buildFinalOrderDetails = async (items, targetTokoId) => {
+    const finalDetails = [];
+
+    for (const item of items) {
+        const qty = parseInt(item.qty, 10);
+        if (!qty || qty < 1) {
+            throw Object.assign(new Error("Qty item tidak valid"), { statusCode: 400 });
+        }
+
+        let produk = null;
+
+        if (item.produk_id) {
+            produk = await Produk.findOne({
+                where: {
+                    id: item.produk_id,
+                    toko_id: targetTokoId,
+                },
+            });
+        }
+
+        if (!produk && item.barcode) {
+            produk = await Produk.findOne({
+                where: {
+                    barcode: item.barcode,
+                    toko_id: targetTokoId,
+                },
+            });
+        }
+
+        if (!produk) {
+            throw Object.assign(
+                new Error(`Produk ${item.nama_produk || item.barcode || ""} tidak ditemukan di toko tujuan`),
+                { statusCode: 404 }
+            );
+        }
+
+        const finalHarga = getRetailPrice(produk);
+        const subtotal = finalHarga * qty;
+
+        finalDetails.push({
+            produk_id: produk.id,
+            barcode: produk.barcode,
+            nama_produk: produk.nama_produk,
+            harga: finalHarga,
+            qty,
+            subtotal,
+        });
+    }
+
+    return finalDetails;
+};
+
+const summarizeDetailsByBarcode = (details) => {
+    const map = new Map();
+
+    for (const detail of details) {
+        const key = detail.barcode;
+        const current = map.get(key) || {
+            produk_id: detail.produk_id,
+            barcode: detail.barcode,
+            nama_produk: detail.nama_produk,
+            harga: Number(detail.harga || 0),
+            qty: 0,
+            subtotal: 0,
+        };
+
+        current.qty += Number(detail.qty || 0);
+        current.subtotal += Number(detail.subtotal || 0);
+        map.set(key, current);
+    }
+
+    return map;
+};
+
+const findOrCreateSourceProduk = async (detail, sourceTokoId, userId, transaction) => {
+    const sourceProduk = await Produk.findOne({
+        where: {
+            barcode: detail.barcode,
+            toko_id: sourceTokoId,
+        },
+        transaction,
+    });
+
+    if (sourceProduk) {
+        return sourceProduk;
+    }
+
+    return Produk.create(
+        {
+            nama_produk: detail.nama_produk,
+            barcode: detail.barcode,
+            stok_produk: 0,
+            harga_beli: detail.harga,
+            harga_jual_ritel: detail.harga,
+            harga_jual_biasa: detail.harga,
+            user_id: userId,
+            toko_id: sourceTokoId,
+        },
+        { transaction }
+    );
+};
+
+const findOrCreateOrderCustomer = async (order, sourceToko, userId, transaction) => {
+    const customerName = sourceToko?.nama_toko || `Order ${order.order_code}`;
+    let pelanggan = await Pelanggan.findOne({
+        where: {
+            nama_pelanggan: customerName,
+            toko_id: order.target_toko_id,
+        },
+        transaction,
+    });
+
+    if (pelanggan) {
+        return pelanggan;
+    }
+
+    pelanggan = await Pelanggan.create(
+        {
+            nama_pelanggan: customerName,
+            alamat: sourceToko?.alamat || null,
+            user_id: userId,
+            toko_id: order.target_toko_id,
+            hutang: 0,
+        },
+        { transaction }
+    );
+
+    return pelanggan;
+};
+
+const syncOrderToTransactionHistory = async ({
+    order,
+    details,
+    sourceToko,
+    userId,
+    transaction,
+}) => {
+    const pelanggan = await findOrCreateOrderCustomer(order, sourceToko, userId, transaction);
+    const totalItem = details.length;
+    const totalQty = details.reduce((sum, detail) => sum + Number(detail.qty || 0), 0);
+    const totalHarga = details.reduce((sum, detail) => sum + Number(detail.subtotal || 0), 0);
+
+    let transaksi = await TransaksiPenjualan.findOne({
+        where: { order_id: order.id },
+        transaction,
+    });
+
+    if (!transaksi) {
+        transaksi = await TransaksiPenjualan.create(
+            {
+                user_id: userId,
+                toko_id: order.target_toko_id,
+                pelanggan_id: pelanggan.id,
+                order_id: order.id,
+                total_item: totalItem,
+                total_qty: totalQty,
+                total_harga: totalHarga,
+                total_bayar: totalHarga,
+                sisa_hutang: 0,
+                total_kembalian: 0,
+            },
+            { transaction }
+        );
+    } else {
+        await transaksi.update(
+            {
+                user_id: userId,
+                toko_id: order.target_toko_id,
+                pelanggan_id: pelanggan.id,
+                total_item: totalItem,
+                total_qty: totalQty,
+                total_harga: totalHarga,
+                total_bayar: totalHarga,
+                sisa_hutang: 0,
+                total_kembalian: 0,
+            },
+            { transaction }
+        );
+    }
+
+    await TransaksiDetail.destroy({
+        where: { transaksi_id: transaksi.id },
+        transaction,
+    });
+
+    for (const detail of details) {
+        await TransaksiDetail.create(
+            {
+                transaksi_id: transaksi.id,
+                produk_id: detail.produk_id,
+                pelanggan_id: pelanggan.id,
+                barcode: detail.barcode,
+                harga: detail.harga,
+                qty: detail.qty,
+                subtotal: detail.subtotal,
+            },
+            { transaction }
+        );
+    }
+
+    return transaksi;
 };
 
 const createOrder = async (req, res) => {
@@ -285,16 +493,19 @@ const getOrders = async (req, res) => {
 
         if (searchKeyword) {
             const keyword = `%${searchKeyword}%`;
+            const matchedTokos = await Toko.findAll({
+                attributes: ["id"],
+                where: {
+                    nama_toko: { [Op.iLike]: keyword },
+                },
+            });
+            const matchedTokoIds = matchedTokos.map((toko) => toko.id);
             filters.push({
                 [Op.or]: [
-                    { order_code: { [Op.like]: keyword } },
-                    { note: { [Op.like]: keyword } },
-                    sequelize.where(sequelize.col("source_toko.nama_toko"), {
-                        [Op.like]: keyword,
-                    }),
-                    sequelize.where(sequelize.col("target_toko.nama_toko"), {
-                        [Op.like]: keyword,
-                    }),
+                    { order_code: { [Op.iLike]: keyword } },
+                    { note: { [Op.iLike]: keyword } },
+                    { source_toko_id: { [Op.in]: matchedTokoIds } },
+                    { target_toko_id: { [Op.in]: matchedTokoIds } },
                 ],
             });
         }
@@ -549,6 +760,14 @@ const approveOrder = async (req, res) => {
             { transaction: t }
         );
 
+        await syncOrderToTransactionHistory({
+            order,
+            details: finalDetails,
+            sourceToko,
+            userId: req.user.id,
+            transaction: t,
+        });
+
         await t.commit();
 
         const updated = await Order.findOne({
@@ -662,9 +881,204 @@ const rejectOrder = async (req, res) => {
     }
 };
 
+const reviseApprovedOrder = async (req, res) => {
+    const t = await sequelize.transaction();
+    try {
+        const { id } = req.params;
+        const submittedItems = Array.isArray(req.body?.items) ? req.body.items : [];
+        const reason = (req.body?.reason || "").toString().trim();
+
+        if (!submittedItems.length) {
+            await t.rollback();
+            return error(res, "Items order tidak boleh kosong", 400);
+        }
+
+        if (!reason) {
+            await t.rollback();
+            return error(res, "Alasan revisi wajib diisi", 400);
+        }
+
+        const order = await Order.findOne({
+            where: { id },
+            include: [{ model: OrderDetail }],
+            transaction: t,
+        });
+
+        if (!order) {
+            await t.rollback();
+            return error(res, "Order tidak ditemukan", 404);
+        }
+
+        if (req.user.role_name !== "superadmin" && req.user.toko_id !== order.target_toko_id) {
+            await t.rollback();
+            return error(res, "Hanya toko penjual yang dapat merevisi order ini", 403);
+        }
+
+        if (order.status !== "approved") {
+            await t.rollback();
+            return error(res, "Hanya order approved yang dapat direvisi", 400);
+        }
+
+        const sourceTokoId = order.source_toko_id;
+        const targetTokoId = order.target_toko_id;
+        const originalDetails = getOrderDetails(order).map((detail) => ({
+            produk_id: detail.produk_id,
+            barcode: detail.barcode,
+            nama_produk: detail.nama_produk,
+            harga: Number(detail.harga || 0),
+            qty: Number(detail.qty || 0),
+            subtotal: Number(detail.subtotal || 0),
+        }));
+        const finalDetails = await buildFinalOrderDetails(submittedItems, targetTokoId);
+
+        if (finalDetails.length === 0) {
+            await t.rollback();
+            return error(res, "Order tidak boleh kosong", 400);
+        }
+
+        const oldByBarcode = summarizeDetailsByBarcode(originalDetails);
+        const newByBarcode = summarizeDetailsByBarcode(finalDetails);
+        const allBarcodes = new Set([...oldByBarcode.keys(), ...newByBarcode.keys()]);
+
+        for (const barcode of allBarcodes) {
+            const oldDetail = oldByBarcode.get(barcode);
+            const newDetail = newByBarcode.get(barcode);
+            const referenceDetail = newDetail || oldDetail;
+            const oldQty = Number(oldDetail?.qty || 0);
+            const newQty = Number(newDetail?.qty || 0);
+
+            const targetProduk = await Produk.findOne({
+                where: {
+                    barcode,
+                    toko_id: targetTokoId,
+                },
+                transaction: t,
+            });
+
+            if (!targetProduk) {
+                await t.rollback();
+                return error(res, `Produk ${referenceDetail.nama_produk} tidak ditemukan di toko penjual`, 404);
+            }
+
+            const nextTargetStock = Number(targetProduk.stok_produk || 0) + oldQty - newQty;
+            if (nextTargetStock < 0) {
+                await t.rollback();
+                return error(res, `Stok ${referenceDetail.nama_produk} di toko penjual tidak cukup untuk revisi`, 400);
+            }
+
+            await targetProduk.update(
+                {
+                    stok_produk: nextTargetStock,
+                },
+                { transaction: t }
+            );
+
+            const sourceProduk = await findOrCreateSourceProduk(referenceDetail, sourceTokoId, req.user.id, t);
+            const nextSourceStock = Number(sourceProduk.stok_produk || 0) - oldQty + newQty;
+            if (nextSourceStock < 0) {
+                await t.rollback();
+                return error(res, `Stok ${referenceDetail.nama_produk} di toko pembeli tidak cukup untuk revisi`, 400);
+            }
+
+            await sourceProduk.update(
+                {
+                    stok_produk: nextSourceStock,
+                },
+                { transaction: t }
+            );
+        }
+
+        await OrderDetail.destroy({
+            where: { order_id: order.id },
+            transaction: t,
+        });
+
+        for (const detail of finalDetails) {
+            await OrderDetail.create(
+                {
+                    order_id: order.id,
+                    produk_id: detail.produk_id,
+                    barcode: detail.barcode,
+                    nama_produk: detail.nama_produk,
+                    harga: detail.harga,
+                    qty: detail.qty,
+                    subtotal: detail.subtotal,
+                },
+                { transaction: t }
+            );
+        }
+
+        const totalItem = finalDetails.length;
+        const totalQty = finalDetails.reduce((sum, detail) => sum + Number(detail.qty || 0), 0);
+        const totalHarga = finalDetails.reduce((sum, detail) => sum + Number(detail.subtotal || 0), 0);
+        const revisionNote = `[Revisi ${new Date().toISOString()}] ${reason}`;
+        const note = order.note ? `${order.note}\n${revisionNote}` : revisionNote;
+
+        await order.update(
+            {
+                total_item: totalItem,
+                total_qty: totalQty,
+                total_harga: totalHarga,
+                note,
+                approved_by: req.user.id,
+                approved_at: new Date(),
+            },
+            { transaction: t }
+        );
+
+        const sourceToko = await Toko.findByPk(sourceTokoId, { transaction: t });
+        await syncOrderToTransactionHistory({
+            order,
+            details: finalDetails,
+            sourceToko,
+            userId: req.user.id,
+            transaction: t,
+        });
+
+        await t.commit();
+
+        const updated = await Order.findOne({
+            where: { id },
+            include: [
+                { model: OrderDetail, include: [{ model: Produk }] },
+                { model: Toko, as: "source_toko" },
+                { model: Toko, as: "target_toko" },
+            ],
+        });
+        const notification = buildNotification(updated, "revised", req.user.full_name || "");
+
+        broadcastToToko(targetTokoId, {
+            type: "notification",
+            notification,
+        });
+
+        broadcastToToko(sourceTokoId, {
+            type: "notification",
+            notification: {
+                ...notification,
+                title: "Order Direvisi",
+                message: `Order ${updated.order_code} yang kamu kirim sudah direvisi. Silakan cek ulang detail order.`,
+                link: "/order",
+            },
+        });
+
+        broadcastToRole("superadmin", {
+            type: "notification",
+            notification,
+        });
+
+        return success(res, "Order berhasil direvisi", updated);
+    } catch (err) {
+        await t.rollback();
+        console.error(err);
+        return error(res, err.statusCode ? err.message : "Gagal merevisi order", err.statusCode || 500, err.message);
+    }
+};
+
 module.exports = {
     createOrder,
     getOrders,
     approveOrder,
     rejectOrder,
+    reviseApprovedOrder,
 };

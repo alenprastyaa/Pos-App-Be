@@ -2,6 +2,7 @@ const { DataTypes } = require("sequelize");
 const Db = require("../config/db");
 const Pelanggan = require("./Pelanggan");
 const Toko = require("./Toko");
+const Order = require("./Order");
 const TransaksiPenjualan = Db.define("transaksi_penjualan", {
     id: {
         type: DataTypes.UUID,
@@ -19,6 +20,11 @@ const TransaksiPenjualan = Db.define("transaksi_penjualan", {
     pelanggan_id: {
         type: DataTypes.UUID,
         allowNull: true
+    },
+    order_id: {
+        type: DataTypes.UUID,
+        allowNull: true,
+        unique: true
     },
     total_item: {
         type: DataTypes.INTEGER,
@@ -51,6 +57,10 @@ TransaksiPenjualan.belongsTo(Pelanggan, {
 
 TransaksiPenjualan.belongsTo(Toko, {
     foreignKey: "toko_id",
+});
+
+TransaksiPenjualan.belongsTo(Order, {
+    foreignKey: "order_id",
 });
 
 Toko.hasMany(TransaksiPenjualan, {

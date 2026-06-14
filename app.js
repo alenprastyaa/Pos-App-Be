@@ -2,6 +2,7 @@ const express = require('express')
 const app = express()
 const bodyParser = require("body-parser");
 const cors = require('cors')
+const { DataTypes } = require("sequelize");
 app.use(bodyParser.json());
 const db = require("./config/db")
 const port = 3900
@@ -17,11 +18,38 @@ const dashboard = require("./routes/dashboard")
 const orderRoutes = require("./routes/orderRoutes")
 const realtimeRoutes = require("./routes/realtimeRoutes")
 const { initializeEmailReportScheduler } = require("./services/emailReportScheduler");
+const TransaksiPenjualan = require("./models/TransaksiPenjualan");
+
+const ensureOrderTransactionColumn = async () => {
+    const queryInterface = db.getQueryInterface();
+    const tableName = TransaksiPenjualan.getTableName();
+    let table;
+
+    try {
+        table = await queryInterface.describeTable(tableName);
+    } catch (error) {
+        return;
+    }
+
+    if (!table.order_id) {
+        await queryInterface.addColumn(tableName, "order_id", {
+            type: DataTypes.UUID,
+            allowNull: true,
+            references: {
+                model: "orders",
+                key: "id",
+            },
+            onUpdate: "CASCADE",
+            onDelete: "SET NULL",
+        });
+    }
+};
 
 
 const StartApp = async () => {
     try {
         await db.authenticate();
+        await ensureOrderTransactionColumn();
         await db.sync();
         await initializeEmailReportScheduler();
         app.use("/user", AuthRoutes)
