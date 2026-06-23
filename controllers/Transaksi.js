@@ -6,10 +6,20 @@ const sequelize = require("../config/db");
 const Pelanggan = require("../models/Pelanggan");
 const { Op } = require("sequelize");
 
+const getHargaGrosir = (produk) => {
+  const prices = [produk.harga_jual_ritel, produk.harga_jual_biasa]
+    .map(Number)
+    .filter((price) => Number.isFinite(price) && price > 0);
+
+  return prices.length > 0 ? Math.min(...prices) : 0;
+};
+
 const scanBarcode = async (req, res) => {
   try {
     const { barcode } = req.body;
-    const produk = await Produk.findOne({ where: { barcode } });
+    const produk = await Produk.findOne({
+      where: { barcode, toko_id: req.user.toko_id },
+    });
     if (!produk) return error(res, "Produk tidak ditemukan", 404);
     return success(res, "Produk ditemukan", produk);
   } catch (err) {
@@ -48,7 +58,9 @@ const createTransaksiReguler = async (req, res) => {
         return error(res, "Barcode dan qty wajib diisi untuk setiap item", 400);
       }
 
-      const produk = await Produk.findOne({ where: { barcode: item.barcode } });
+      const produk = await Produk.findOne({
+        where: { barcode: item.barcode, toko_id: req.user.toko_id },
+      });
       if (!produk) {
         await t.rollback();
         return error(
@@ -174,7 +186,9 @@ const createTransaksi = async (req, res) => {
         return error(res, "Barcode dan qty wajib diisi untuk setiap item", 400);
       }
 
-      const produk = await Produk.findOne({ where: { barcode: item.barcode } });
+      const produk = await Produk.findOne({
+        where: { barcode: item.barcode, toko_id: req.user.toko_id },
+      });
       if (!produk) {
         await t.rollback();
         return error(
@@ -184,7 +198,15 @@ const createTransaksi = async (req, res) => {
         );
       }
 
-      const harga = produk.harga_jual_ritel;
+      const harga = getHargaGrosir(produk);
+      if (harga <= 0) {
+        await t.rollback();
+        return error(
+          res,
+          `Harga grosir produk ${produk.nama_produk} belum valid`,
+          400,
+        );
+      }
       const subtotal = harga * item.qty;
       totalHarga += subtotal;
       totalQty += item.qty;
@@ -210,15 +232,13 @@ const createTransaksi = async (req, res) => {
       );
     }
 
-    const hutangLama = pelanggan.hutang || 0;
+    const hutangLama = Number(pelanggan.hutang) || 0;
     let sisaBayar = pembayaran;
     let sisaHutangLama = hutangLama;
 
-    if (sisaBayar > 0 && sisaHutangLama > 0) {
-      const bayarHutangLama = Math.min(sisaBayar, sisaHutangLama);
-      sisaBayar -= bayarHutangLama;
-      sisaHutangLama -= bayarHutangLama;
-    }
+    const pembayaranHutangLama = Math.min(sisaBayar, sisaHutangLama);
+    sisaBayar -= pembayaranHutangLama;
+    sisaHutangLama -= pembayaranHutangLama;
 
     let sisaHutangBaru = totalHarga - sisaBayar;
     let kembalian = 0;
@@ -251,7 +271,7 @@ const createTransaksi = async (req, res) => {
         id: pelanggan.id,
         nama_pelanggan: pelanggan.nama_pelanggan,
         hutang_sebelumnya: hutangLama,
-        pembayaran_untuk_hutang_lama: Math.min(pembayaran, hutangLama),
+        pembayaran_untuk_hutang_lama: pembayaranHutangLama,
         sisa_hutang_lama: sisaHutangLama,
         hutang_transaksi_saat_ini: sisaHutangBaru,
         total_hutang_sekarang: totalHutangAkhir,
